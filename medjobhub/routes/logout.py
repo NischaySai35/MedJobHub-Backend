@@ -1,8 +1,9 @@
-from medjobhub import app,session,jsonify,db
+from medjobhub import app,session,jsonify,db,cross_origin,allowed_url
 from medjobhub.models import User
 
 #Logout
 @app.route('/logout', methods=['POST'])
+@cross_origin(origin=allowed_url, supports_credentials=True)
 def logout():
     if "user_id" in session:
         user_id = session.pop("user_id", None)
