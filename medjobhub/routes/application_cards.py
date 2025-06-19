@@ -7,6 +7,7 @@ mail = Mail(app)
 
 #Employer_Applications
 @app.route('/employer_applications', methods=['GET'])
+@cross_origin(origin=allowed_url, supports_credentials=True)
 def employer_applications():
     if 'user_id' not in session or session['role'] != 'employer':
         return jsonify({"success": False, "message": "Unauthorized access."})
