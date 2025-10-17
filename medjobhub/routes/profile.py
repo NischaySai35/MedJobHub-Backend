@@ -3,8 +3,8 @@ from medjobhub.models import User, UserProfile
 import cloudinary.uploader
 from medjobhub.routes.upload_cloudinary import upload_files_to_cloudinary
 
-@app.route('/current_user_profile', methods=['GET'])
-@cross_origin(origin=allowed_url, supports_credentials=True)
+@app.route('/current_user_profile', methods=['GET', 'OPTIONS'])
+@cross_origin(origin="http://localhost:5173", supports_credentials=True)
 def get_current_user_profile():
     if 'user_id' not in session:
         return jsonify({"success": False, "message": "Please sign in to access profile"})
@@ -68,8 +68,8 @@ def get_current_user_profile():
             "message": f"Error fetching profile: {str(e)}"
         })
 
-@app.route('/update_profile', methods=['POST'])
-@cross_origin(origin=allowed_url, supports_credentials=True)
+@app.route('/update_profile', methods=['POST', 'OPTIONS'])
+@cross_origin(origin="http://localhost:5173", supports_credentials=True)
 def update_profile():
     if 'user_id' not in session:
         return jsonify({"success": False, "message": "Please sign in to update profile"})
@@ -121,8 +121,8 @@ def update_profile():
             "message": f"Error updating profile: {str(e)}"
         })
 
-@app.route('/upload_profile_picture', methods=['POST'])
-@cross_origin(origin=allowed_url, supports_credentials=True)
+@app.route('/upload_profile_picture', methods=['POST', 'OPTIONS'])
+@cross_origin(origin="http://localhost:5173", supports_credentials=True)
 def upload_profile_picture():
     if 'user_id' not in session:
         return jsonify({"success": False, "message": "Please sign in to upload profile picture"})
