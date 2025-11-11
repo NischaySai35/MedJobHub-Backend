@@ -1,6 +1,7 @@
 from flask import request, jsonify
 from medjobhub import app, db, os, secure_filename, generate_password_hash,allowed_file
 from medjobhub.models import User
+from medjobhub.models import UserProfile
 from werkzeug.exceptions import BadRequest
 from .upload_cloudinary import upload_files_to_cloudinary
 
@@ -85,6 +86,16 @@ def signup():
 
         db.session.add(new_user)
         db.session.commit()
+        # ✅ Automatically create an empty UserProfile right after signup
+
+        user_profile = UserProfile(
+            user_id=new_user.id,
+            first_name=new_user.first_name or "",
+            last_name=new_user.last_name or ""
+        )
+        db.session.add(user_profile)
+        db.session.commit()
+
 
         return jsonify({
             "success": True,

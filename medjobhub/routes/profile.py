@@ -2,6 +2,17 @@ from medjobhub import app, db, session, jsonify, request, cross_origin, allowed_
 from medjobhub.models import User, UserProfile
 import cloudinary.uploader
 from medjobhub.routes.upload_cloudinary import upload_files_to_cloudinary
+from flask import Blueprint, request, send_file, render_template_string
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+import os
+import requests
+from io import BytesIO
+from datetime import datetime
+from weasyprint import HTML
 
 @app.route('/current_user_profile', methods=['GET', 'OPTIONS'])
 @cross_origin(origin="http://localhost:5173", supports_credentials=True)
@@ -179,3 +190,168 @@ def upload_profile_picture():
             "success": False,
             "message": f"Error uploading profile picture: {str(e)}"
         })
+    
+@app.route("/generate_resume", methods=["GET"])
+@cross_origin(origin="http://localhost:5173", supports_credentials=True)
+def generate_resume():
+    if "user_id" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    user = User.query.get(session["user_id"])
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    user_profile = UserProfile.query.filter_by(user_id=user.id).first()
+    print("Fetched UserProfile:", user_profile)
+
+    if not user_profile:
+        return jsonify({"error": "Profile not found"}), 404
+
+    # ✅ Merge user_profile fields into user for easy access
+    if user_profile:
+        for field in [
+            "medical_license_number", "education", "work_experience",
+            "certifications", "skills", "linkedin", "github",
+            "twitter", "portfolio_website"
+        ]:
+            if getattr(user_profile, field, None):
+                setattr(user, field, getattr(user_profile, field))
+
+
+    profile_pic = user_profile.profile_pic_url if getattr(user_profile, "profile_pic_url", None) else None
+
+    # ✅ HTML Resume Template
+    html_content = f"""
+    <html>
+    <head>
+        <style>
+            body {{
+                font-family: sans-serif;
+                background: #f9fbfd;
+                color: #333;
+                margin: 0;
+                padding: 0;
+            }}
+            .resume {{
+                width: 100%;
+                margin: 0;
+                background: white;
+                border-radius: 16px;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+                padding: 5px 8px;
+            }}
+            .header {{
+                text-align: center;
+            }}
+            .profile-pic {{
+                width: 120px;
+                height: 120px;
+                border-radius: 50%;
+                object-fit: cover;
+                border: 4px solid #007bff;
+                margin-bottom: 10px;
+            }}
+            .no-pic {{
+                width: 120px;
+                height: 120px;
+                border-radius: 50%;
+                border: 3px dashed #007bff;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: #007bff;
+                font-weight: bold;
+                margin: 0 auto 10px auto;
+            }}
+            h1 {{
+                color: #007bff;
+                font-size: 26px;
+                margin-bottom: 4px;
+            }}
+            .subtitle {{
+                color: gray;
+                font-size: 14px;
+                margin-bottom: 10px;
+            }}
+            .contact {{
+                font-size: 13px;
+                color: #555;
+                margin-bottom: 20px;
+            }}
+            hr {{
+                border: none;
+                border-top: 2px solid #007bff;
+                margin: 20px 0;
+            }}
+            .section-title {{
+                color: #007bff;
+                font-size: 18px;
+                margin-top: 20px;
+                font-weight: 600;
+                border-left: 4px solid #007bff;
+                padding-left: 10px;
+            }}
+            .section-content {{
+                margin-top: 8px;
+                font-size: 14px;
+                color: #333;
+                line-height: 1.6;
+            }}
+            .links a {{
+                color: #007bff;
+                text-decoration: none;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="resume">
+            <div class="header">
+                {"<img src='" + profile_pic + "' class='profile-pic'>" if profile_pic else "<div class='no-pic'>No Photo</div>"}
+                <h1>{user.first_name or ''} {user.last_name or ''}</h1>
+                <div class="subtitle">{user.role or 'Professional'}</div>
+                <div class="contact">📧 {user.email or 'N/A'} &nbsp; | &nbsp; 📞 {user.phone or 'N/A'}</div>
+            </div>
+
+            <hr/>
+
+            <div class="section">
+                <div class="section-title">👤 Gender & Age</div>
+                <div class="section-content">{user.gender or 'N/A'}, {user.age or 'N/A'} years old</div>
+
+                <div class="section-title">📍 Address</div>
+                <div class="section-content">{user.address or 'Not provided'}</div>
+
+                <div class="section-title">🏥 Medical License</div>
+                <div class="section-content">{getattr(user, "medical_license_number", "Not provided")}</div>
+
+                <div class="section-title">🎓 Education</div>
+                <div class="section-content">{getattr(user, "education", "Not provided")}</div>
+
+                <div class="section-title">💼 Work Experience</div>
+                <div class="section-content">{getattr(user, "work_experience", "Not provided")}</div>
+
+                <div class="section-title">🏅 Certifications</div>
+                <div class="section-content">{getattr(user, "certifications", "Not provided")}</div>
+
+                <div class="section-title">🔧 Skills</div>
+                <div class="section-content">{getattr(user, "skills", "Not provided")}</div>
+
+                <div class="section-title">🔗 Online Profiles</div>
+                <div class="section-content links">
+                    LinkedIn: {getattr(user, "linkedin_profile", "Not provided")}<br/>
+                    GitHub: {getattr(user, "github_profile", "Not provided")}<br/>
+                    Twitter: {getattr(user, "twitter_profile", "Not provided")}<br/>
+                    Portfolio: {getattr(user, "portfolio_website", "Not provided")}
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    # ✅ Convert HTML → PDF
+    pdf_buffer = BytesIO()
+    HTML(string=html_content).write_pdf(pdf_buffer)
+    pdf_buffer.seek(0)
+
+    return send_file(pdf_buffer, as_attachment=True, download_name=f"{user.first_name}_Resume.pdf", mimetype="application/pdf")

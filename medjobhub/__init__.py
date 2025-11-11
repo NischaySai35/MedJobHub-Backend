@@ -77,4 +77,4 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
 from medjobhub.models import User, Job, UserProfile,JobApplication
-from medjobhub.routes import signin,signup,verify_otp,logout,job_cards,application_cards,contact_us,profile
+from medjobhub.routes import signin,signup,verify_otp,logout,job_cards,application_cards,contact_us,profile,ai_sorting
