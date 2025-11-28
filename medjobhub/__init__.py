@@ -33,7 +33,14 @@ db.init_app(app)
 
 #http://medjobhub.com
 allowed_url="https://medjobhub.vercel.app"
-CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}}, supports_credentials=True)
+
+# allow both localhost domain variants for dev
+CORS(app,
+     resources={r"/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}},
+     supports_credentials=True,
+     methods=["GET", "POST", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"]
+     )
 
 app.config.from_object(Config) 
 
@@ -77,4 +84,4 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
 from medjobhub.models import User, Job, UserProfile,JobApplication
-from medjobhub.routes import signin,signup,verify_otp,logout,job_cards,application_cards,contact_us,profile,ai_sorting
+from medjobhub.routes import signin,signup,verify_otp,logout,job_cards,application_cards,contact_us,profile,ai_sorting,chatbot
