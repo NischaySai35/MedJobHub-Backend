@@ -1,3 +1,4 @@
+# chatbot.py (updated)
 from medjobhub import app, session, jsonify, cross_origin, allowed_url, request
 from medjobhub.models import User, Job, JobApplication
 from medjobhub.routes.profile import get_current_user_profile
@@ -9,195 +10,159 @@ from flask import stream_with_context, Response
 # ensure logger prints debug messages (optional)
 app.logger.setLevel(logging.DEBUG)
 
-@app.route("/chatbot", methods=["POST", "OPTIONS"])
-@cross_origin(origin=allowed_url, supports_credentials=True)
-def chatbot():
-    if "user_id" not in session:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    data = request.json
-    user_msg = data.get("message", "")
-
-    # fetch user
-    user = User.query.get(session["user_id"])
-    role = user.role
-
-    # fetch profile
-    profile = {}
-    prof_data = get_current_user_profile().json
-    if prof_data.get("success"):
-        profile = prof_data["user"]
-
-    # fetch jobs
-    jobs = [j.to_dict() for j in Job.query.all()]
-
-    # fetch apps
-    if role == "employer":
-        apps = JobApplication.query.join(Job).filter(Job.posted_by == user.id).all()
-    else:
-        apps = JobApplication.query.filter_by(user_id=user.id).all()
-    apps = [a.to_dict() for a in apps]
-
-    # Log fetched data so you can see it in the server console
-    app.logger.info("Chatbot request from user_id=%s role=%s message=%s", session.get("user_id"), role, user_msg)
-    app.logger.debug("Profile: %s", json.dumps(profile, indent=2))
-    app.logger.debug("Jobs count=%d", len(jobs))
-    app.logger.debug("Jobs (sample): %s", json.dumps(jobs[:3], indent=2))
-    app.logger.debug("Applications count=%d", len(apps))
-    app.logger.debug("Applications (sample): %s", json.dumps(apps[:3], indent=2))
-
-    system_prompt = f"""
-    You are MedJobHub's AI Assistant.
-
-    USER ROLE: {role}
-
-    USER PROFILE:
-    {json.dumps(profile, indent=2)}
-
-    ALL JOBS:
-    {json.dumps(jobs, indent=2)}
-
-    USER APPLICATIONS:
-    {json.dumps(apps, indent=2)}
-
-    When the user asks:
-    - "take me to job applications" → respond with JSON:
-      {{"reply": "Taking you there!", "action": {{"type": "NAVIGATE", "url": "/job-applications"}}}})
-
-    - "go to available jobs" → "/job-listings"
-
-    - Queries like "how many jobs?", "jobs from xyz", "jobs for nurses":
-      → analyze the jobs list and reply.
-
-    - If job_seeker asks "what skills should I improve for this job?"
-      → read job.required_qualifications & job.specialization & compare with user.skills.
-
-    Your answer MUST be JSON:
-    {{
-      "reply": "<normal human reply>",
-      "action": null OR {{
-         "type": "NAVIGATE",
-         "url": "<frontend route>"
-      }}
-    }}
-    """
-
-    # print full system prompt to console so you can verify everything sent to the model
-    app.logger.debug("Full SYSTEM PROMPT:\n%s", system_prompt)
-
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
-    result = model.generate_content(
-        system_prompt + "\nUser: " + user_msg
-    )
-
-    try:
-        text = result.text.strip()
-        # extract JSON
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        parsed = json.loads(text[start:end])
-        return jsonify(parsed)
-    except:
-        return jsonify({"reply": result.text, "action": None})
-    
-
-
 
 @app.route("/chatbot_stream", methods=["GET"])
 def chatbot_stream():
+    # Quick auth guard
     if "user_id" not in session:
+        app.logger.info("[STREAM] unauthorized request to /chatbot_stream")
         return Response("Unauthorized", status=401)
 
-    # message comes from query string (SSE GET cannot have a body)
-    user_msg = request.args.get("message", "")
+    # SSE uses GET; message passed as query param
+    user_msg = request.args.get("message", "") or ""
+    user_id = session.get("user_id")
+    app.logger.info("[STREAM] incoming chat stream request user_id=%s msg_len=%d", user_id, len(user_msg))
 
-    # fetch user
-    user = User.query.get(session["user_id"])
-    role = user.role
+    # --- Load data (profile, jobs, apps) ---
+    try:
+        user = User.query.get(user_id)
+        role = getattr(user, "role", "job_seeker")
+    except Exception as e:
+        app.logger.exception("[STREAM] failed to fetch user")
+        return Response("Server error", status=500)
 
-    # fetch profile
-    prof_data = get_current_user_profile().json
-    profile = prof_data.get("user", {})
+    try:
+        prof_data = get_current_user_profile().json
+        profile = prof_data.get("user", {}) if isinstance(prof_data, dict) else {}
+    except Exception as e:
+        app.logger.exception("[STREAM] failed to fetch profile")
+        profile = {}
 
-    # fetch jobs
-    jobs = [j.to_dict() for j in Job.query.all()]
+    try:
+        jobs = [j.to_dict() for j in Job.query.all()]
+    except Exception as e:
+        app.logger.exception("[STREAM] failed to fetch jobs")
+        jobs = []
 
-    # fetch applications
-    if role == "employer":
-        apps = JobApplication.query.join(Job).filter(Job.posted_by == user.id).all()
-    else:
-        apps = JobApplication.query.filter_by(user_id=user.id).all()
+    try:
+        if role == "employer":
+            apps_q = JobApplication.query.join(Job).filter(Job.posted_by == user.id).all()
+        else:
+            apps_q = JobApplication.query.filter_by(user_id=user.id).all()
+        apps = [a.to_dict() for a in apps_q]
+    except Exception as e:
+        app.logger.exception("[STREAM] failed to fetch applications")
+        apps = []
 
-    apps = [a.to_dict() for a in apps]
+    app.logger.debug("[STREAM] profile keys: %s", list(profile.keys()) if isinstance(profile, dict) else str(type(profile)))
+    app.logger.debug("[STREAM] jobs_count=%d apps_count=%d", len(jobs), len(apps))
+    if len(jobs) > 0:
+        app.logger.debug("[STREAM] jobs sample: %s", json.dumps(jobs[:2], indent=2))
+    if len(apps) > 0:
+        app.logger.debug("[STREAM] apps sample: %s", json.dumps(apps[:2], indent=2))
 
-    # SYSTEM PROMPT
+    # --- System prompt (PARA protocol instructions) ---
     system_prompt = f"""
-        You are MedJobHub's AI Assistant.
+You are MedJobHub's AI Assistant.
 
-        USER ROLE: {role}
+USER ROLE: {role}
 
-        USER PROFILE:
-        {json.dumps(profile, indent=2)}
+USER PROFILE:
+{json.dumps(profile, indent=2)}
 
-        ALL JOBS:
-        {json.dumps(jobs, indent=2)}
+ALL JOBS:
+{json.dumps(jobs, indent=2)}
 
-        USER APPLICATIONS:
-        {json.dumps(apps, indent=2)}
+USER APPLICATIONS:
+{json.dumps(apps, indent=2)}
 
-        IMPORTANT:
-        - During streaming, first send normal human-readable text only.
-        - Output your response in multiple <PARA> blocks.
-        - Each <PARA> contains a full paragraph (never partial sentences).
-        - Never split words across blocks.
-        - After finishing, send ONE final JSON object starting with <JSON>.
+IMPORTANT STREAMING FORMAT:
+- Respond using <PARA> blocks for human-readable paragraphs.
+- Each <PARA> must contain a full paragraph (no partial sentences).
+- Never split words across blocks.
+- Do NOT repeat content in multiple <PARA> blocks. Each <PARA> must continue smoothly from the previous one.
+- After all <PARA> blocks, output ONE <JSON> block with only the final JSON payload.
 
-        When the user asks:
-        - "take me to job applications" → return JSON: {{"reply": "Taking you there!", "action": {{"type": "NAVIGATE", "url": "/job-applications"}}}}
-        - "go to available jobs" → navigate to "/job-listings"
-        - Queries like "how many jobs?", "jobs from xyz", etc → analyze jobs
-        - Skills improvement → compare job requirements with user skills
+When the user asks:
+- "take me to job applications" → produce final JSON action for "/job-applications"
+- "go to available jobs" → final JSON action "/jobs"
+similarly for "/profile", "/about", "/contact-us", home ("/").
+- "how many jobs", "jobs from X", "skills to improve" → analyze and respond.
 
-        Your final JSON MUST be in this format:
-        <JSON>
-        {{
-            "reply": "<message>",
-            "action": null OR {{
-                "type": "NAVIGATE",
-                "url": "<path>"
-            }}
-        }}
-    """
-    # print full system prompt for streaming endpoint as well
-    app.logger.debug("Full SYSTEM PROMPT (stream):\n%s", system_prompt)
+Final JSON format (wrapped in <JSON>...</JSON>):
+<JSON>
+{{
+  "reply": "<short human summary>",
+  "action": null OR {{
+      "type": "NAVIGATE",
+      "url": "<path>"
+  }}
+}}
+</JSON>
+"""
 
+    app.logger.debug("Full SYSTEM PROMPT (stream) length=%d", len(system_prompt))
+
+    # --- Generator that yields SSE data frames ---
     def generate():
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        resp = model.generate_content(system_prompt + "\nUSER: " + user_msg, stream=True)
+        try:
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            # start streaming from the model
+            resp = model.generate_content(system_prompt + "\nUSER: " + user_msg, stream=True)
 
-        buffer = ""
+            buffer = ""
+            for chunk in resp:
+                # chunk.text may be None or empty; use getattr safely
+                text = getattr(chunk, "text", None)
+                if not text:
+                    continue
 
-        for chunk in resp:
-            if not chunk.text:
-                continue
-            buffer += chunk.text
+                buffer += text
 
-            # Process <PARA> blocks
-            while "<PARA>" in buffer and "</PARA>" in buffer:
-                start = buffer.index("<PARA>") + 6
-                end = buffer.index("</PARA>")
-                para = buffer[start:end].strip()
-                buffer = buffer[end + len("</PARA>"):]
-                yield f"data: {json.dumps({'sender': 'bot', 'text': para})}\n\n"
+                # emit all complete <PARA> blocks found in buffer
+                while "<PARA>" in buffer and "</PARA>" in buffer:
+                    start = buffer.index("<PARA>") + len("<PARA>")
+                    end = buffer.index("</PARA>")
+                    para = buffer[start:end].strip()
+                    buffer = buffer[end + len("</PARA>"):]
+                    app.logger.debug("[STREAM] emitting PARA (len=%d)", len(para))
+                    yield f"data: {json.dumps({'sender': 'bot', 'text': para})}\n\n"
 
-            # Process <JSON> block (END)
-            if "<JSON>" in buffer and "</JSON>" in buffer:
-                start = buffer.index("<JSON>") + 6
-                end = buffer.index("</JSON>")
-                json_block = buffer[start:end].strip()
-                buffer = ""  # reset unused text
-                yield f"data: {json.dumps({'sender': 'final', 'text': json_block})}\n\n"
-                break  # final message
+                # detect final JSON block and finish
+                if "<JSON>" in buffer and "</JSON>" in buffer:
+                    start = buffer.index("<JSON>") + len("<JSON>")
+                    end = buffer.index("</JSON>")
+                    json_block = buffer[start:end].strip()
+                    buffer = ""  # clear leftover
+                    app.logger.debug("[STREAM] emitting FINAL JSON")
+                    yield f"data: {json.dumps({'sender': 'final', 'text': json_block})}\n\n"
+                    return  # end generator after final JSON
 
-        yield "data: [DONE]\n\n"
+            # If loop ends without a final JSON, but we have leftover text, emit it as a PARA
+            if buffer.strip():
+                app.logger.debug("[STREAM] emitting leftover PARA at end (len=%d)", len(buffer.strip()))
+                yield f"data: {json.dumps({'sender': 'bot', 'text': buffer.strip()})}\n\n"
+
+        except Exception as e:
+            # Log and inform client gracefully
+            app.logger.exception("[STREAM] exception during generation")
+            err_msg = "⚠️ The AI stream encountered an error. Please try again."
+            try:
+                yield f"data: {json.dumps({'sender': 'bot', 'text': err_msg})}\n\n"
+            except Exception:
+                # If yielding fails, just stop
+                app.logger.exception("[STREAM] failed to send error message")
+
+        finally:
+            # Always signal end-of-stream
+            yield "data: [DONE]\n\n"
+
+    # Return SSE response (Flask Response supports streaming iterables)
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
